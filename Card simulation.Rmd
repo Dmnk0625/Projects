@@ -1,0 +1,103 @@
+---
+title: "1. beadando"
+output: pdf_document
+date: "2024-02-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Pakli létrehozása
+32 lap - 4*8
+
+```{r}
+
+library(drcarlate)
+rm(list = ls())
+
+
+piros <- rep("piros", 8)
+tok <- rep("tok", 8)
+zold <- rep("zold", 8)
+makk <- rep("makk", 8)
+
+csomag <- c(piros, tok, zold, makk)
+```
+
+Laphúzás szimulációja
+
+```{r}
+siker <- c()
+game <- c()
+for(i in 1:156900) {
+  s <- sample(csomag, 7, replace = TRUE)
+  s[s=="tok"]
+  l <- length(s[s=="tok"])
+
+    if(l==4) {
+      siker <- c(siker,i)
+      game <- append(game, 1) 
+    }else{
+      game <- append(game, 0)
+    }
+  
+}
+probability <- length(siker)/i
+
+paste("Valószínűség =", probability)
+```
+
+Konvergencia ábrázolása az 1%-os határok között
+
+
+```{r}
+freq <- cumsum(game==1)/1:156900
+
+
+plot(freq,      # vector
+     type = 'l',      # line type
+     lwd = 2,         # width of line
+     col = 'tomato',  # color of line
+     las = 1,         # orientation of tick-mark labels
+     ylim = c(0.05, 0.06),
+     xlim = c(80000, 156900),
+     xlab = "number of tosses",    # x-axis label
+     ylab = "relative frequency")  # y-axis label
+abline(h = 0.05825498, col = 'gray50')
+abline(h = 0.05710142, col = 'red')
+```
+Látszik, hogy a valószínűség az 1%-os hibahatáron belül mozog.
+
+
+Elméleti valószínűség: 0.0576782
+
+1%-os felső - alsó korlátja
+```{r}
+0.0576782*1.01-0.0576782*0.99
+
+```
+Optimális eleszám meghatározása 1%-os pontossággal, 95%-os valószínűséggel
+```{r}
+epsilon <- 0.001153564
+
+alpha <- 0.05
+
+sigma <- sqrt(0.0576782*(1-0.0576782))
+
+u <- 1- alpha/2
+x=norminv(u,0,1)
+n=round((x*sigma /epsilon)^2)
+
+
+```
+
+Tehát n=156900
+
+
+
+
+
+
+
+
