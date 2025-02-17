@@ -1,0 +1,385 @@
+---
+title: "Magyarország és Lengyelország GDP-jének elemzése"
+output:
+  html_document: default
+  pdf_document: default
+  word_document: default
+date: "2024-04-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r, include = FALSE}
+install.packages("readxl",repos = "http://cran.us.r-project.org")
+install.packages("TSA",repos = "http://cran.us.r-project.org")
+install.packages("forecast",repos = "http://cran.us.r-project.org")
+install.packages("Hmisc",repos = "http://cran.us.r-project.org")
+library(forecast)
+library(readxl)
+library(TSA)
+library(ggplot2)
+library(Hmisc)
+library(tinytex)
+library(rmarkdown)
+```
+
+Magyarország reál GDP-jét ábrázolva egy vonaldiagrammon látszódik a növekvő trend és az éves szezonalitás. Jellemzően minden év Q1-ben visszaesik a GDP és nyáron tetőzik. A trend miatt az idősor nem stacionárius. A 2008-as válaság és a 2020-ban kezdődő Covid szemmel látható változásokat okozott a gazdaságban.
+
+```{r, echo=FALSE}
+gdp <- read_excel(path="/Dominik/Msc/2_felev/Idosor/4_bead/GDP_bead.xlsx", sheet="GDP")
+population<- read_excel(path="/Dominik/Msc/2_felev/Idosor/4_bead/GDP_bead.xlsx", sheet="Population")
+fx <- read_excel(path="/Dominik/Msc/2_felev/Idosor/4_bead/GDP_bead.xlsx", sheet="FX")
+
+sample<- ts(gdp[ ,2], frequency=4, start = c(1998))
+sample<- drop(sample)
+plot(sample, main="Magyarország reál GDP negyedéves alakulása 1999-2023", xlab="Év", ylab="millió Ft")
+
+```
+
+<br /> Ahhoz hogy az adatok eloszlása jobban közelítsen a normálishoz, Box-cox transzformációt használtam. Ehhez a szükséges lambda paraméter -0,1335.
+
+```{r, echo=FALSE}
+(lambda <- BoxCox.lambda(sample))
+```
+
+<br /> Mivel a lambda nem egyenlő 0-val, ezért az (y\^lambda-1)/lambda alakot használtam a transzformációhoz. Ezután ábrázoltam az autokorrelációt és a parciális autokorrelációfüggvényt. Az autokorrelációfüggvényből is látszik, hogy nem stacionárius az idősor, mivel nem lecsengő 0-ban.
+
+```{r}
+box_sample <- (sample**lambda-1)/lambda
+
+par(mfrow=c(2,2))
+plot(sample, main="Eredeti idősor", xlab="Év", ylab="millió Ft")
+plot(box_sample,main="Box-Cox transzformáció utáni idősor", type="l", xlab="Év", ylab="millió Ft")
+acf(box_sample, main="Autokorreláció",100)
+pacf(box_sample, main="Parciális autokorreláció",100, ylab="PACF")
+```
+
+<br /> A trend szűréséhez differenciáltam az idősort, majd ábrázoltam az autokorrelációfüggvényeket. Az acf-ból látható, hogy minden negyedik érték szignifikáns, ezért újra differenciáltam az idősort lag=4 paraméterrel, hogy a szezonalitás hatását is kizárjam. Ezután már látszódik, hogy lecsengőek az autokorrelációk, és csak kevés kilógó érték van, tehát stacionáriusnak tűnik az idősor.
+
+```{r}
+diffed <- diff(box_sample)
+par(mfrow=c(2,2))
+plot(diffed, main="Magyar GDP differenciálás után", xlab="Év", ylab="Differenciák")
+acf(diffed,50, main="Differenciált adatok ACF")
+pacf(diffed,50,main="Differenciált adatok PACF", ylab="PACF")
+
+diffed_4 <- diff(diffed, 4)
+par(mfrow=c(2,2))
+plot(diffed_4, main="Magyar GDP Lag-4 differenciálás után", xlab="Év", ylab="Differenciák")
+acf(diffed_4,100, main="Lag-4 differenciált adatok ACF")
+pacf(diffed_4,100, main="Lag-4 differenciált adatok PACF", ylab="PACF")
+```
+
+<br /> Az ARIMA modell illesztéséhez használt paramétereket az Akaike-féle információs kritérium segítségével határoztam meg. Kiszámoltam az ARIMA folyamat paramétereinek 121 darab kombinációját úgy, hogy mind a két paraméter maximum 10-es értéket vehessen fel. A legkisebb AIC értékű az ARMA(1,4) lett -875,07 értékkel.
+
+```{r, include=FALSE}
+models = data.frame(expand.grid(ar=0:10, ma=0:10))
+
+models$aics = sapply(1:nrow(models), function(i)  {
+  try(arima(diffed_4, order=c(models$ar[i],0,models$ma[i]))$aic)   
+})
+
+
+models$aic = sapply(1:nrow(models), function(i) {
+  if (is.na(as.numeric(models$aics[i]))) {   
+    models$aic[i] = 99999
+  } else {
+    models$aic[i] = as.numeric(models$aics[i])
+  }
+}   )
+
+models = models[models$aic!=99999,]
+
+
+
+models_rend = models[order(models$aic),]  
+head(models_rend, 1)
+```
+
+Az elemzés során kétféle szcenárióra fogok előrejelzést adni. Egy 'Business as usual" (BAU) és egy 'Severely adverse' (SE) végkimenetelt fogok modellezni.
+
+BAU esemény szerint az orosz-ukrán és az izraeli-palesztin háborúk 2024-ben befejeződnek és a világgazdaság lassan elkezd visszaállni a korábbi kerékvágásba. A modellillesztés után adatmanipuláció nélkül fogok előrejelezést adni a differenciált idősoron, majd visszatranszformálni az eredeti értékekre.
+
+ARMA(1,4)-et illesztve a differenciált idősorra az alábbi eredmények látszódnak.
+
+```{r}
+arma14 = arima(diffed_4,order=c(1,0,4))
+tsdiag(arma14)
+par(mfrow=c(2,2))
+plot(arma14$res, main="Differenciált reizudálisok", ylab="Differenciák", xlab="Év")
+hist(arma14$res,breaks=20,freq=F, main="Reziduálisok eloszlása", xlab="Reziduálisok", ylab="Gyakoriság")
+qqnorm(arma14$res, main = "Q-Q diagram")     
+qqline(arma14$res,col=2) 
+aa=McLeod.Li.test(arma14)
+title(main = "MCLeod Li teszt")
+```
+
+<br /> Az autokorreláció függvényből az látszik, hogy korrelálatlanok a reziduálisok, illetve a Ljung-box teszt is arra utal, hogy fehér zajból származik a folyamat. A hisztogramból látszik, hogy eloszlásuk 0 körüli, tehát tekinthetők normális eloszlásúnak, ráadásul a Q-Q plot is alátámasztja ezt az eredményt. A McLeaud Li teszt alapján elfogadom a nullhipotézist, miszerint nincsen feltételes heteroszkedaszticitás, tehát nem ARCH/GARCH típusú az idősor. A látottak alapján az illeszkedés jónak mondható.
+
+2024-2025-re az előrejelzést az r 'predict' függvényével végeztem, majd a 95%-os konfidenciaintervallumokat is ábrázoltam.
+
+```{r}
+pred_ahead = 8
+
+logpr   = predict(arma14, n.ahead=pred_ahead)   
+logpr.f = logpr$pred + 1.96*logpr$se  
+logpr.a = logpr$pred - 1.96*logpr$se   
+
+
+logprr  = c(diffed_4[length(diffed_4)], logpr$pred)
+logpr.f = c(diffed_4[length(diffed_4)], logpr.f)
+logpr.a = c(diffed_4[length(diffed_4)], logpr.a)
+
+logprr  = ts(logprr, start=c(2023,4), freq=4)
+logpr.f = ts(logpr.f, start=c(2023,4), freq=4)
+logpr.a = ts(logpr.a, start=c(2023,4), freq=4)
+
+plot(diffed_4, type="l", xlim=c(1999,2026), main="Differenciált növekmények előrejelzése 2024-2025-re", ylab="Differenciák", xlab="Év")
+lines(logprr, col=2)
+lines(logpr.f, col=3, lty="dashed")
+lines(logpr.a, col=3, lty="dashed")
+
+```
+
+<br /> A kétszer differenciált előrejelzéseket kétszer kellett visszatranszformálni, amit az r 'diffinv' függvényével csináltam. A transzformálás után jóval tágabbak lettek a konfidenciaintervallumok.
+
+```{r}
+pr=pr.f=pr.a=box_sample[length(box_sample)]    
+
+pr = diffinv(logprr, differences=1, lag=4, xi=diffed[(length(diffed)-3):length(diffed)])
+pr_2 = diffinv(pr, differences=1, lag=1, xi=box_sample[length(box_sample)-4])
+
+pr.f= diffinv(logpr.f, differences=1, lag=4, xi=diffed[(length(diffed)-3):length(diffed)])
+pr_2.f = diffinv(pr.f, differences=1, lag=1, xi=box_sample[length(box_sample)-4])
+  
+pr.a= diffinv(logpr.a, differences=1, lag=4, xi=diffed[(length(diffed)-3):length(diffed)])
+pr_2.a = diffinv(pr.a, differences=1, lag=1, xi=box_sample[length(box_sample)-4])
+
+
+prr_2  = c(pr_2[5:length(pr_2)])
+prr_2.f = c(pr_2.f[5:length(pr_2.f)])
+prr_2.a = c(pr_2.a[5:length(pr_2.a)])
+
+
+
+prr_2 = ts(prr_2,start=c(2023,4),freq=4)
+prr_2.f = ts(prr_2.f,start=c(2023,4),freq=4)
+prr_2.a = ts(prr_2.a,start=c(2023,4),freq=4)
+
+plot(box_sample, type="l", xlim=c(1999,2027),ylim=c(min(box_sample), max(prr_2.f)), main="GDP adatok előrejelzése 2024-2025-re", xlab="Év", ylab="millió Ft")
+lines(prr_2, col=2,lwd=2)
+lines(prr_2.f,col=3,lty="dashed",lwd=1.5)
+lines(prr_2.a,col=3,lty="dashed",lwd=1.5)
+```
+
+<br /> Severely adverse esetnél Oroszország legyőzi Ukrajnát és még 2024-ben lerohanja Litvániát a Suwalky-folyosó megszerzéséért. Izrael megtámadja Libanont, amibe aztán a Közel-Kelet számos további állama is bekapcsolódik. Azt feltételezem, hogy egy ilyen jellegű eseménysorozat legalább olyan hatásokkal járna, mint a pandémiás időszak 2020-ban. Az SE szcenáriónál 2024 Q1-Q2-re egy olyan arányú mozgást szimulálok, mint ami 2020 Q1-Q2-ben volt. 2024 Q1-ben a BAU esethez képest 2%-kal kevesebb, míg Q2-ben a szezonális növekedés helyett további 10%-kal csökken.
+
+Mivel az idősor gyakorlatilag ugyanaz, mint az előző esetben, hasonló logikát fogok követni az előrejelzéshez.
+
+```{r}
+pr_SA <- ts(c(box_sample[length(box_sample)]*0.9972427, 6.6007*6.58793/6.595500), frequency = 4, start = c(2024,1))
+box_sample_SA <- ts( c(box_sample,pr_SA), start = start(box_sample), frequency = frequency(pr_SA))
+
+plot(box_sample_SA, main="Magyar reál GDP alakulása - SE", xlab="Év", ylab="millió Ft")
+diff_SA <- diff(box_sample_SA)
+
+par(mfrow=c(2,2))
+plot(diff_SA,main="Magyar GDP differenciálás után - SE", xlab="Év", ylab="Differenciák")
+acf(diff_SA,40, main="Differenciált adatok ACF - SE")
+pacf(diff_SA,40,main="Differenciált adatok PACF - SE", ylab="PACF")
+
+```
+
+<br /> Differenciálás után újra lag=4 parametérerű differenciálást végzek az idősoron. Van néhány szignifikáns érték az autokorreláció ábráin, de összeségében stacionáriusnak tekinthető az idősor, mivel csak néhány kiugró érték van.
+
+```{r}
+
+diffed_4_SA <- diff(diff_SA, 4)
+
+par(mfrow=c(2,2))
+plot(diffed_4_SA, main="Magyar GDP lag-4 differenciálás után - SE", xlab="Év", ylab="Differenciák")
+acf(diffed_4_SA,40, main="Lag-4 differenciált adatok ACF - SE")
+pacf(diffed_4_SA,40,main="Lag-4 differenciált adatok PACF - SE", ylab="PACF")
+
+```
+
+<br /> Modellilesztéshez az AIC alapján ARMA(1,7) folyamat javasolt, aminek értéke -857,08.
+
+```{r, include = FALSE}
+models_SA = data.frame(expand.grid(ar=0:10, ma=0:10))
+
+models_SA$aics = sapply(1:nrow(models_SA), function(i)  {
+  try(arima(diffed_4_SA, order=c(models_SA$ar[i],0,models_SA$ma[i]))$aic)   
+})
+
+models_SA$aic = sapply(1:nrow(models_SA), function(i) {
+  if (is.na(as.numeric(models_SA$aics[i]))) {   
+    models_SA$aic[i] = 99999
+  } else {
+    models_SA$aic[i] = as.numeric(models_SA$aics[i])
+  }
+}   )
+
+models_SA = models_SA[models_SA$aic!=99999,]
+
+models_rend_SA = models_SA[order(models_SA$aic),]  
+head(models_rend_SA, 1) ##ARMA(1,7)
+```
+
+<br /> Miután illesztettem egy ARMA(1,7) folyamatot SE szimulált idősorra, az ábrák az előzőekhez hasonló eredményeket adnak a Mcleaud Li teszt kivételével. Ebben az esetben 1-2 érték a kritikus érték alatt van. Ennek ellenére elfogadom a nullhipotézist, mivel ha 95%-os hibahatárt veszek, akkor ez még elfogadható tartományon belüli hiba. Tehát az illeszkedés megfelelőnek mondható.
+
+```{r}
+arma17_SA = arima(diffed_4_SA,order=c(1,0,7))
+tsdiag(arma17_SA)
+par(mfrow=c(2,2))
+plot(arma17_SA$res, main="Differenciált reizudálisok - SE", ylab="Differenciák", xlab="Év")
+hist(arma17_SA$res,breaks=20,freq=F, main="Reziduálisok eloszlása - SE", xlab="Reziduálisok", ylab="Gyakoriság")
+qqnorm(arma17_SA$res, main = "Q-Q diagram - SE")     
+qqline(arma17_SA$res,col=2) 
+aa=McLeod.Li.test(arma17_SA)
+title(main = "MCLeod Li teszt - SE")
+
+```
+
+SE szcenárió esetén az előrejelzés hasonlít arra a mozgásra, mint ami covid idején is történt. Nem is vártam mást, mivel a covid idején történt adatokból szimuláltam ezt a kimenetelt.
+
+```{r}
+pred_ahead_SA = 6
+
+logpr_SA   = predict(arma17_SA, n.ahead=pred_ahead_SA)   
+logpr_SA.f = logpr_SA$pred + 1.96*logpr_SA$se  
+logpr_SA.a = logpr_SA$pred - 1.96*logpr_SA$se   
+
+
+logprr_SA  = c(diffed_4_SA[length(diffed_4_SA)], logpr_SA$pred)
+logpr_SA.f = c(diffed_4_SA[length(diffed_4_SA)], logpr_SA.f)
+logpr_SA.a = c(diffed_4_SA[length(diffed_4_SA)], logpr_SA.a)
+
+
+logprr_SA  = ts(logprr_SA, start=c(2024,2), freq=4)
+logpr_SA.f = ts(logpr_SA.f, start=c(2024,2), freq=4)
+logpr_SA.a = ts(logpr_SA.a, start=c(2024,2), freq=4)
+
+plot(diffed_4_SA, type="l", xlim=c(2017,2027), main="Differenciált növekmények előrejelzése - SE", xlab="Év", ylab="Differenciák")
+lines(logprr_SA, col=2)
+lines(logpr_SA.f, col=3, lty="dashed")
+lines(logpr_SA.a, col=3, lty="dashed")
+
+logprr_SA<-ts(logprr_SA[2:length(logprr_SA)], start = c(2024,3), freq=4)
+logpr_SA.f<-ts(logpr_SA.f[2:length(logpr_SA.f)], start = c(2024,3), freq=4)
+logpr_SA.a<-ts(logpr_SA.a[2:length(logpr_SA.a)], start = c(2024,3), freq=4)
+
+
+```
+
+Visszatranszformálás után hasonlóan tág konfidencia intervallumok jelennek meg.
+
+```{r}
+pr_SA=pr_SA.f=pr_SA.a=box_sample_SA[length(box_sample_SA)]    
+
+pr_SA = diffinv(logprr_SA, differences=1, lag=4, xi=diff_SA[(length(diff_SA)-3):length(diff_SA)])
+pr_2_SA = diffinv(pr_SA, differences=1, lag=1, xi=box_sample_SA[length(box_sample_SA)-4])
+
+ 
+pr_SA.f= diffinv(logpr_SA.f, differences=1, lag=4, xi=diff_SA[(length(diff_SA)-3):length(diff_SA)])
+pr_2_SA.f = diffinv(pr_SA.f, differences=1, lag=1, xi=box_sample_SA[length(box_sample_SA)-4])
+  
+pr_SA.a= diffinv(logpr_SA.a, differences=1, lag=4, xi=diff_SA[(length(diff_SA)-3):length(diff_SA)])
+pr_2_SA.a = diffinv(pr_SA.a, differences=1, lag=1, xi=box_sample_SA[length(box_sample_SA)-4])
+
+
+prr_2_SA  = c(pr_2_SA[5:length(pr_2_SA)])
+prr_2_SA.f = c(pr_2_SA.f[5:length(pr_2_SA.f)])
+prr_2_SA.a = c(pr_2_SA.a[5:length(pr_2_SA.a)])
+
+
+prr_2_SA = ts(prr_2_SA,start=c(2024,2),freq=4)
+prr_2_SA.f = ts(prr_2_SA.f,start=c(2024,2),freq=4)
+prr_2_SA.a = ts(prr_2_SA.a,start=c(2024,2),freq=4)
+
+plot(box_sample_SA, type="l", xlim=c(1999,2026),ylim=c(min(box_sample_SA), max(prr_2_SA.f)) ,main="GDP adatok előrejelzése 2024-2025-re - SE", ylab="Év", xlab="millió Ft")
+lines(prr_2_SA, col=2,lwd=2)
+lines(prr_2_SA.f,col=3,lty="dashed",lwd=1.5)
+lines(prr_2_SA.a,col=3,lty="dashed",lwd=1.5)
+
+
+```
+
+Az előrejelzés után a megadott adatkból kiszámoltam az egy főre eső negyedéves GDP-ket Magyaroszág és Lengyelország esetében is forint pénznemben. Mivel A GDP, Population és Fx táblákban szereplő adatok eltérő időpontokhoz vannak rögzítve, ezért előfordul, hogy néhol nincsen negyedéves adat. Ezeket a közbülső hiányzó értékeket lineáris interpolációval pótoltam, a hiányzó kezdő vagy záró adatokat pedig egyenlővé tettem az elérhető legelső/legutolsó adatokkal. A kalkuláció során átváltottam a zlotyt forintra az aktuális dátumra megadott árfolyammal.
+
+Az adatmanipuláció után a végső dataframe-ben a dátum, az eredeti gdp adatok, és a kalkulált egy főre eső gdp-k szerepelnek. A többi segédoszlopot kitöröltem.
+
+```{r}
+
+population<- subset(population, Date > '1998-01-01')
+gdp_per_person<- merge(population, gdp, by='Date', all.y = TRUE)
+
+
+f_hu <- approxfun(gdp_per_person$Date, gdp_per_person$Population_HU, method='linear', n=104, rule=2)
+gdp_per_person['interpolated_hu']<-f_hu(gdp_per_person$Date)
+
+f_pl <- approxfun(gdp_per_person$Date, gdp_per_person$Population_PL, method='linear', n=104, rule=2)
+gdp_per_person['interpolated_po']<-f_pl(gdp_per_person$Date)
+
+gdp_per_person <- subset(gdp_per_person, select=-c(2:3))
+
+gdp_per_person['HU_gdp_person_huf'] <-gdp_per_person$GDP_HU_HUF/gdp_per_person$interpolated_hu#*1000000
+gdp_per_person['PL_gdp_person_pln'] <-gdp_per_person$GDP_PL_PLN/gdp_per_person$interpolated_hu#*1000000
+
+
+gdp_per_person <- merge(gdp_per_person, fx, by='Date', all.x = TRUE)
+f_rx <- approxfun(gdp_per_person$Date, gdp_per_person$`PLN/HUF`, method='linear', n=104, rule=2)
+gdp_per_person['interpolated_rx']<-f_rx(gdp_per_person$Date)
+
+gdp_per_person <- subset(gdp_per_person, select=-8)
+
+
+gdp_per_person['PL_gdp_person_huf'] <- gdp_per_person$PL_gdp_person_pln*gdp_per_person$interpolated_rx
+
+
+gdp_per_person <- subset(gdp_per_person, select=-c(4,5,7,8))
+head(gdp_per_person)
+```
+
+Ábrázolva látható, hogy mind a két ország egy főre jutó reál GDP-je növekvő tendeciát mutat, csak eltérő szinteken. Mivel a GDP folyamatosan növekszik, míg a népesség csökken, ez nyilvánvaló következmény. Érdekes mefigyelés, hogy a magyar GDP valamivel szezonálisabb mint a lengyeleké, bár az utóbbi pár évben már ott is szabályszerű(bb) fluktuálás figyelhető meg.
+
+```{r}
+par(mfrow=c(2,2))
+plot( gdp_per_person$Date, gdp_per_person$HU_gdp_person_huf, type = 'l', main = "Magyarország egy főre eső reál GDP-je", xlab = "Év", ylab = "millió Ft")
+
+plot( gdp_per_person$Date, gdp_per_person$PL_gdp_person_huf, type = 'l', main = "Lengyelország egy főre eső reál GDP-je", xlab =  "Év", ylab = "millió Ft")
+
+ggplot(gdp_per_person, aes(Date)) +                    
+  geom_line(aes(y=HU_gdp_person_huf), colour="red") + 
+  geom_line(aes(y=PL_gdp_person_huf), colour="green")+
+  labs(x = "Év", y="millió Ft",
+       title = "Magyarország és Lengyelország reál GDP-je")+
+  theme(plot.title = element_text( hjust = .5, size = 20))
+```
+
+<br /> Az egy főre jutó reál GDP előrejelzéséhez auto.arima és forecast függényt használtam. Megfigyelhető, hogy míg a Magyarországi előrejelzésnél egy nagyjából konstans hibahatáron belüli, de meredekebben mozgó előrejelzést kaptam, Lengyelországnál az 5 éves predikciónál szemmel láthatóan egyre növekszik a konfidenciaintervallum, de kevesebbet mozog maga az előrejelzés. Ez betudható az előző bekezdésben említett 'gyengébb' szezonalitásnak is.
+
+Továbbá említésre méltó, hogy az egy főre eső magyar reál gdp előrejelzésnél egy jóval biztosabb becslést kaptam, mint amikor csak magát a gdp-t jeleztem előre. Úgy látszik a népesség csökkenése "korrigálja" a gdp mozgásából származó bizonytalanságot.
+
+```{r}
+ts_per_capita_HU <- ts(gdp_per_person$HU_gdp_person_huf, start = c(1998,1), frequency = 4)
+ts_per_capita_PL <- ts(gdp_per_person$PL_gdp_person_huf, start = c(1998,1), frequency = 4)
+
+autofit_HU <- auto.arima(ts_per_capita_HU)
+
+par(mfrow=c(2,2))
+plot(forecast(autofit_HU, h=5), main="Előrejelzés 1 évre HU", xlab="Év", ylab="millió Ft")
+plot(forecast(autofit_HU, h=8),main="Előrejelzés 2 évre HU", xlab="Év", ylab="millió Ft")
+plot(forecast(autofit_HU, h=20),main="Előrejelzés 5 évre HU", xlab="Év", ylab="millió Ft")
+
+
+
+autofit_PL <- auto.arima(ts_per_capita_PL)
+par(mfrow=c(2,2))
+plot(forecast(autofit_PL, h=5), main="Előrejelzés 1 évre PL", xlab="Év", ylab="millió Ft")
+plot(forecast(autofit_PL, h=8), main="Előrejelzés 2 évre PL", xlab="Év", ylab="millió Ft")
+plot(forecast(autofit_PL, h=20), main="Előrejelzés 5 évre PL", xlab="Év", ylab="millió Ft")
+
+```
